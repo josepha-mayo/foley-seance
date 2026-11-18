@@ -1,5 +1,7 @@
 # Foley Séance
 
+**[Try the live demo](https://josepha-mayo.github.io/foley-seance/)** · No installation or account needed. Audio stays in your browser tab.
+
 A browser-local sound-design instrument for **Kiroween · Costume Contest**. Place a small sound in a haunted chamber, shape its stereo position, distance, door muffling, an authored opening or closing, and echo, then download a stereo WAV. The spooky room controls the effect rather than merely decorating it.
 
 **MIT-licensed source and browser-local static app. Cloud-Chrome drawing, failed-import recovery and timed-door save/reopen journeys have recorded qualification; current Windows usability remains unqualified. No human listening-quality claim is made.**

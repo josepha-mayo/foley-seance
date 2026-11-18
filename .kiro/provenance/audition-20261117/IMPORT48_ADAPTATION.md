@@ -1,0 +1,5 @@
+# Imported-source and48kHz adaptation
+
+Integrator-authored extension of the existing genuine Kiro-derived engine and audition architecture. No additional Kiro generation is claimed. Main DSP file remains byte-identical. Added owned imported-source snapshots, sourceID+byte binding, exact whole-source+boundedtail loop validation, and focused tests. UI now decodes/imports/renders at48kHz, with explicit local-only mono conversion and Repeat my whole clip wording. No clipping/trimming, sourceupload, normalization-up or duration-dependent imported mode.
+
+65tests pass. Actual cloud Chrome filechooser imported original stereo48kHz synthetic test audio, auditioned with placement/door edits, stopped/restarted, and rendered/exported. Download readback matched both visible receipt and independently predicted downmix/render hash; stereoPCM16/48kHz/120,000frames,240,000native samples/0differences. Source switch stopped audition and invalidated export. This is functional evidence, not artistic listening approval. Windows currentcandidate and other codecs remain unqualified. Runtime/audio/test evidence excluded from source checkpoint.

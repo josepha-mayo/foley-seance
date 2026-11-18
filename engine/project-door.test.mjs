@@ -1,0 +1,10 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {encodeProject,decodeProject} from './project-file.mjs';
+const base=()=>({source:new Float32Array([0,.2,-.2]),label:'Synthetic test input',demoKind:null,x:50,y:30,route:'still',doorClosed:true,echoAmount:.3,doorEvent:{at:.5}});
+test('timed door project v4 roundtrips source, initial state and event exactly',async()=>{const data=base(),text=await encodeProject(data);assert.equal(JSON.parse(text).version,4);const result=await decodeProject(text);assert.deepEqual(result,data);});
+test('v4 supports existing drawn route and door event together',async()=>{const data={...base(),route:'drawn',motionPoints:[{t:0,x:0,y:.5},{t:1,x:1,y:.5}]};assert.deepEqual(await decodeProject(await encodeProject(data)),data);});
+test('door events reject unknown fields, getters, out of bounds and unsupported slider fractions',async()=>{for(const event of [{at:0},{at:1},{at:.33},{at:NaN},{at:.5,end:true},Object.defineProperty({},'at',{get(){throw new Error('getter must not run');},enumerable:true})])await assert.rejects(encodeProject({...base(),doorEvent:event}));});
+test('door event requires explicit echo state',async()=>{const data=base();delete data.echoAmount;await assert.rejects(encodeProject(data));});
+test('new fields cannot be smuggled into old project versions',async()=>{const value=JSON.parse(await encodeProject(base()));for(const version of [1,2,3])await assert.rejects(decodeProject(JSON.stringify({...value,version})));});
+test('v4 cannot omit the event or invent motion for a non-drawn route',async()=>{const value=JSON.parse(await encodeProject(base()));delete value.doorEvent;await assert.rejects(decodeProject(JSON.stringify(value)));await assert.rejects(encodeProject({...base(),motionPoints:[{t:0,x:0,y:0},{t:1,x:1,y:1}]}));});

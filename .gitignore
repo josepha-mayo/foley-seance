@@ -1,3 +1,9 @@
 dist/
 __pycache__/
 *.pyc
+*.foley.json
+*.wav
+*.mp3
+*.mp4
+.env
+.env.*

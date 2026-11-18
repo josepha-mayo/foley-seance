@@ -1,0 +1,558 @@
+import {createDoorEnvelope,checkedDoorEvent} from './door-envelope.mjs';
+export {doorClosedAmount} from './door-envelope.mjs';
+function ownDataObject(value, fields, label) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    throw new Error(label + ' must be a plain data object');
+  const keys = Reflect.ownKeys(value);
+  for (const key of keys) {
+    const d = Object.getOwnPropertyDescriptor(value, key);
+    if (typeof key !== 'string' || !d.enumerable || !('value' in d))
+      throw new Error(label + ' contains unknown or non-data fields');
+  }
+}
+
+// foley-engine.mjs
+
+/**
+ * Foley Seance DSP Engine
+ * Pure browser-local audio processing for haunted room spatialisation.
+ * No physical acoustic simulation—artistic placement and muffling only.
+ */
+
+// ============================================================================
+// VALIDATION
+// ============================================================================
+
+export function validateRecipe(recipe, sourceDuration) {
+  ownDataObject(recipe, ["version", "doorClosed", "trajectory"], "recipe");
+  if (typeof sourceDuration !== 'number' || !isFinite(sourceDuration) || sourceDuration <= 0 || sourceDuration > 8) {
+    throw new Error(`sourceDuration must be finite number >0 and <=8 seconds, got: ${sourceDuration}`);
+  }
+
+  if (typeof recipe !== 'object' || recipe === null || Array.isArray(recipe)) {
+    throw new Error('recipe must be a plain object');
+  }
+
+  const allowedKeys = recipe.version === 3 ? ['version', 'doorClosed', 'trajectory', 'echoAmount', 'doorEvent'] : recipe.version === 2 ? ['version', 'doorClosed', 'trajectory', 'echoAmount'] : ['version', 'doorClosed', 'trajectory'];
+  const recipeKeys = Object.keys(recipe);
+  const unknownKeys = recipeKeys.filter(k => !allowedKeys.includes(k));
+  if (unknownKeys.length > 0) {
+    throw new Error(`Unknown recipe fields: ${unknownKeys.join(', ')}`);
+  }
+  const missingKeys = allowedKeys.filter(k => !recipeKeys.includes(k));
+  if (missingKeys.length > 0) {
+    throw new Error(`Missing recipe fields: ${missingKeys.join(', ')}`);
+  }
+
+  if (recipe.version !== 1 && recipe.version !== 2 && recipe.version !== 3) {
+    throw new Error(`recipe.version must be 1, 2 or 3, got: ${recipe.version}`);
+  }
+
+  if (typeof recipe.doorClosed !== 'boolean') {
+    throw new Error(`recipe.doorClosed must be boolean, got: ${typeof recipe.doorClosed}`);
+  }
+
+  if (!Array.isArray(recipe.trajectory)) {
+    throw new Error('recipe.trajectory must be an array');
+  }
+
+  const traj = recipe.trajectory;
+  if (traj.length < 2 || traj.length > 128) {
+    throw new Error(`recipe.trajectory must have 2..128 points, got: ${traj.length}`);
+  }
+
+  for (let i = 0; i < traj.length; i++) {
+    const pt = traj[i];
+    ownDataObject(pt, ["t", "x", "y"], `trajectory[${i}]`);
+    if (typeof pt !== 'object' || pt === null || Array.isArray(pt)) {
+      throw new Error(`trajectory[${i}] must be a plain object`);
+    }
+
+    const ptKeys = Object.keys(pt);
+    const allowedPtKeys = ['t', 'x', 'y'];
+    const unknownPtKeys = ptKeys.filter(k => !allowedPtKeys.includes(k));
+    if (unknownPtKeys.length > 0) {
+      throw new Error(`trajectory[${i}] has unknown fields: ${unknownPtKeys.join(', ')}`);
+    }
+    const missingPtKeys = allowedPtKeys.filter(k => !ptKeys.includes(k));
+    if (missingPtKeys.length > 0) {
+      throw new Error(`trajectory[${i}] missing fields: ${missingPtKeys.join(', ')}`);
+    }
+
+    if (typeof pt.t !== 'number' || !isFinite(pt.t)) {
+      throw new Error(`trajectory[${i}].t must be finite number, got: ${pt.t}`);
+    }
+    if (typeof pt.x !== 'number' || !isFinite(pt.x)) {
+      throw new Error(`trajectory[${i}].x must be finite number, got: ${pt.x}`);
+    }
+    if (typeof pt.y !== 'number' || !isFinite(pt.y)) {
+      throw new Error(`trajectory[${i}].y must be finite number, got: ${pt.y}`);
+    }
+
+    if (pt.x < 0 || pt.x > 1) {
+      throw new Error(`trajectory[${i}].x must be in [0,1], got: ${pt.x}`);
+    }
+    if (pt.y < 0 || pt.y > 1) {
+      throw new Error(`trajectory[${i}].y must be in [0,1], got: ${pt.y}`);
+    }
+
+    if (i === 0 && pt.t !== 0) {
+      throw new Error(`trajectory[0].t must be 0, got: ${pt.t}`);
+    }
+    if (i === traj.length - 1 && pt.t !== sourceDuration) {
+      throw new Error(`trajectory[${traj.length - 1}].t must equal sourceDuration (${sourceDuration}), got: ${pt.t}`);
+    }
+    if (i > 0 && pt.t <= traj[i - 1].t) {
+      throw new Error(`trajectory[${i}].t must be strictly increasing, got ${traj[i - 1].t} then ${pt.t}`);
+    }
+  }
+
+  // Return deep copy with only owned properties
+  const validated = {
+    version: recipe.version,
+    doorClosed: recipe.doorClosed,
+    trajectory: traj.map(pt => ({ t: pt.t, x: pt.x, y: pt.y }))
+  };
+
+  if (recipe.version === 2 || recipe.version === 3) {
+    if (!('echoAmount' in recipe)) {
+      throw new Error('recipe.echoAmount is required for versions 2 and 3');
+    }
+    if (typeof recipe.echoAmount !== 'number' || !isFinite(recipe.echoAmount)) {
+      throw new Error(`recipe.echoAmount must be finite number, got: ${recipe.echoAmount}`);
+    }
+    if (recipe.echoAmount < 0 || recipe.echoAmount > 0.6) {
+      throw new Error(`recipe.echoAmount must be in [0, 0.6], got: ${recipe.echoAmount}`);
+    }
+    validated.echoAmount = recipe.echoAmount;
+  }
+
+  if (recipe.version === 3) {
+    validated.doorEvent = checkedDoorEvent(recipe.doorEvent);
+    createDoorEnvelope(validated.doorClosed,validated.doorEvent,sourceDuration);
+  }
+
+  return validated;
+}
+
+// ============================================================================
+// WAV ENCODING/DECODING
+// ============================================================================
+
+export function encodeWav(channels, sampleRate) {
+  if (sampleRate !== 24000 && sampleRate !== 48000) throw new Error('sampleRate must be 24000 or 48000');
+
+  if (!Array.isArray(channels) || channels.length !== 2) {
+    throw new Error('channels must be array of exactly 2 Float32Arrays');
+  }
+  const [left, right] = channels;
+  if (!(left instanceof Float32Array) || !(right instanceof Float32Array)) {
+    throw new Error('channels must be Float32Arrays');
+  }
+  if (left.length !== right.length) {
+    throw new Error('channels must have same length');
+  }
+  if (left.length === 0) {
+    throw new Error('channels must be nonempty');
+  }
+  const maxSamples = Math.ceil(9.5 * sampleRate);
+  if (left.length > maxSamples) {
+    throw new Error(`channels too long: ${left.length} samples > ${maxSamples} (9.5s at ${sampleRate}Hz)`);
+  }
+
+  for (let i = 0; i < left.length; i++) {
+    if (!isFinite(left[i]) || left[i] < -1 || left[i] > 1) {
+      throw new Error(`left[${i}] out of range or not finite: ${left[i]}`);
+    }
+    if (!isFinite(right[i]) || right[i] < -1 || right[i] > 1) {
+      throw new Error(`right[${i}] out of range or not finite: ${right[i]}`);
+    }
+  }
+
+  const numFrames = left.length;
+  const numChannels = 2;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const dataSize = numFrames * blockAlign;
+  const fileSize = 36 + dataSize;
+
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+
+  // RIFF header
+  bytes[0] = 0x52; bytes[1] = 0x49; bytes[2] = 0x46; bytes[3] = 0x46; // "RIFF"
+  view.setUint32(4, fileSize, true);
+  bytes[8] = 0x57; bytes[9] = 0x41; bytes[10] = 0x56; bytes[11] = 0x45; // "WAVE"
+
+  // fmt chunk
+  bytes[12] = 0x66; bytes[13] = 0x6d; bytes[14] = 0x74; bytes[15] = 0x20; // "fmt "
+  view.setUint32(16, 16, true); // fmt chunk size
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+
+  // data chunk
+  bytes[36] = 0x64; bytes[37] = 0x61; bytes[38] = 0x74; bytes[39] = 0x61; // "data"
+  view.setUint32(40, dataSize, true);
+
+  // Interleaved PCM16 samples
+  let offset = 44;
+  for (let i = 0; i < numFrames; i++) {
+    const l = left[i];
+    const r = right[i];
+    const lInt = l < 0 ? Math.round(l * 32768) : Math.round(l * 32767);
+    const rInt = r < 0 ? Math.round(r * 32768) : Math.round(r * 32767);
+    view.setInt16(offset, lInt, true);
+    view.setInt16(offset + 2, rInt, true);
+    offset += 4;
+  }
+
+  return new Uint8Array(buffer);
+}
+
+export function decodeWav(bytes) {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new Error('bytes must be Uint8Array');
+  }
+  if (bytes.length < 44) {
+    throw new Error('WAV file too small (less than 44 bytes)');
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  // Validate RIFF header
+  if (bytes[0] !== 0x52 || bytes[1] !== 0x49 || bytes[2] !== 0x46 || bytes[3] !== 0x46) {
+    throw new Error('Invalid RIFF signature');
+  }
+  const fileSize = view.getUint32(4, true);
+  if (fileSize !== bytes.length - 8) {
+    throw new Error(`RIFF size mismatch: expected ${bytes.length - 8}, got ${fileSize}`);
+  }
+  if (bytes[8] !== 0x57 || bytes[9] !== 0x41 || bytes[10] !== 0x56 || bytes[11] !== 0x45) {
+    throw new Error('Invalid WAVE signature');
+  }
+
+  // Validate fmt chunk
+  if (bytes[12] !== 0x66 || bytes[13] !== 0x6d || bytes[14] !== 0x74 || bytes[15] !== 0x20) {
+    throw new Error('Invalid fmt chunk signature');
+  }
+  const fmtSize = view.getUint32(16, true);
+  if (fmtSize !== 16) {
+    throw new Error(`Unsupported fmt chunk size: ${fmtSize} (expected 16)`);
+  }
+  const audioFormat = view.getUint16(20, true);
+  if (audioFormat !== 1) {
+    throw new Error(`Unsupported audio format: ${audioFormat} (expected 1 for PCM)`);
+  }
+  const numChannels = view.getUint16(22, true);
+  if (numChannels !== 2) {
+    throw new Error(`Expected 2 channels, got ${numChannels}`);
+  }
+  const sampleRate = view.getUint32(24, true);
+  if (sampleRate !== 24000 && sampleRate !== 48000) throw new Error('sampleRate must be 24000 or 48000');
+
+  const byteRate = view.getUint32(28, true);
+  const blockAlign = view.getUint16(32, true);
+  const bitsPerSample = view.getUint16(34, true);
+
+  if (bitsPerSample !== 16) {
+    throw new Error(`Expected 16 bits per sample, got ${bitsPerSample}`);
+  }
+  const expectedByteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  if (byteRate !== expectedByteRate) {
+    throw new Error(`Byte rate mismatch: expected ${expectedByteRate}, got ${byteRate}`);
+  }
+  const expectedBlockAlign = numChannels * (bitsPerSample / 8);
+  if (blockAlign !== expectedBlockAlign) {
+    throw new Error(`Block align mismatch: expected ${expectedBlockAlign}, got ${blockAlign}`);
+  }
+
+  // Validate data chunk
+  if (bytes[36] !== 0x64 || bytes[37] !== 0x61 || bytes[38] !== 0x74 || bytes[39] !== 0x61) {
+    throw new Error('Invalid data chunk signature');
+  }
+  const dataSize = view.getUint32(40, true);
+  if (dataSize + 44 !== bytes.length) {
+    throw new Error(`Data size mismatch: expected ${bytes.length - 44}, got ${dataSize}`);
+  }
+  if (dataSize % blockAlign !== 0) {
+    throw new Error('Data size not aligned to block size');
+  }
+
+  const numFrames = dataSize / blockAlign;
+  if (numFrames === 0) throw new Error("WAV must be nonempty");
+  const maxFrames = Math.ceil(9.5 * sampleRate);
+  if (numFrames > maxFrames) {
+    throw new Error(`WAV too long: ${numFrames} frames > ${maxFrames} (9.5s at ${sampleRate}Hz)`);
+  }
+
+  const left = new Float32Array(numFrames);
+  const right = new Float32Array(numFrames);
+
+  let offset = 44;
+  for (let i = 0; i < numFrames; i++) {
+    const lInt = view.getInt16(offset, true);
+    const rInt = view.getInt16(offset + 2, true);
+    left[i] = lInt < 0 ? lInt / 32768 : lInt * Math.fround(1 / 32767);
+    right[i] = rInt < 0 ? rInt / 32768 : rInt * Math.fround(1 / 32767);
+    offset += 4;
+  }
+
+  return { channels: [left, right], sampleRate };
+}
+
+// ============================================================================
+// RENDERING
+// ============================================================================
+
+export function renderRecipe(source, sampleRate, recipe) {
+  if (sampleRate !== 24000 && sampleRate !== 48000) throw new Error('sampleRate must be 24000 or 48000');
+
+  // Validate source
+  if (!(source instanceof Float32Array)) {
+    throw new Error('source must be Float32Array');
+  }
+  if (source.length === 0) {
+    throw new Error('source must be nonempty');
+  }
+  const maxSourceSamples = Math.ceil(8 * sampleRate);
+  if (source.length > maxSourceSamples) {
+    throw new Error(`source too long: ${source.length} samples > ${maxSourceSamples} (8s at ${sampleRate}Hz)`);
+  }
+  for (let i = 0; i < source.length; i++) {
+    if (!isFinite(source[i]) || source[i] < -1 || source[i] > 1) {
+      throw new Error(`source[${i}] out of range or not finite: ${source[i]}`);
+    }
+  }
+
+  // Validate sample rate
+  if (sampleRate !== 24000 && sampleRate !== 48000) {
+    throw new Error(`sampleRate must be 24000 or 48000, got: ${sampleRate}`);
+  }
+
+  // Validate recipe
+  const sourceDuration = source.length / sampleRate;
+  const validatedRecipe = validateRecipe(recipe, sourceDuration);
+
+  const doorEnvelope = validatedRecipe.version === 3 ? createDoorEnvelope(validatedRecipe.doorClosed,validatedRecipe.doorEvent,sourceDuration) : null;
+
+  // Calculate output length: source + 1.5s tail
+  const sourceFrames = source.length;
+  const tailFrames = Math.floor(sampleRate * 1.5);
+  const outputFrames = sourceFrames + tailFrames;
+
+  // Allocate output buffers
+  const leftOut = new Float32Array(outputFrames);
+  const rightOut = new Float32Array(outputFrames);
+
+  // Delay network state (4 taps for room ambience)
+  const delayTimes = [
+    Math.floor(0.019 * sampleRate),
+    Math.floor(0.037 * sampleRate),
+    Math.floor(0.071 * sampleRate),
+    Math.floor(0.113 * sampleRate)
+  ];
+  const delayLines = delayTimes.map(len => new Float32Array(len));
+  const delayIndices = [0, 0, 0, 0];
+  const feedbackGain = 0.3; // Bounded to prevent instability
+
+  // Lowpass filter state for distance and door
+  let lpState = 0;
+
+  // Samples are visited forward only within this render. Keep the preceding
+  // segment at exact keyframes to preserve interpolation operation order.
+  // A future random-access caller must reset or independently locate its segment.
+  let trajectoryCursor = 0;
+  // Interpolation helper
+  function interpolateTrajectory(sampleIndex) {
+    const t = sampleIndex / sampleRate;
+    const traj = validatedRecipe.trajectory;
+    
+    // Clamp to last point during tail
+    if (t >= traj[traj.length - 1].t) {
+      return traj[traj.length - 1];
+    }
+
+    // Find surrounding keyframes
+    while (trajectoryCursor < traj.length - 2 && t > traj[trajectoryCursor + 1].t) trajectoryCursor++;
+    for (let i = trajectoryCursor; i < traj.length - 1; i++) {
+      if (t >= traj[i].t && t <= traj[i + 1].t) {
+        const alpha = (t - traj[i].t) / (traj[i + 1].t - traj[i].t);
+        return {
+          x: traj[i].x + alpha * (traj[i + 1].x - traj[i].x),
+          y: traj[i].y + alpha * (traj[i + 1].y - traj[i].y)
+        };
+      }
+    }
+
+    return traj[0];
+  }
+
+  // Process each sample
+  for (let i = 0; i < outputFrames; i++) {
+    // Get source sample (0 during tail)
+    const sourceSample = i < sourceFrames ? source[i] : 0;
+
+    // Get trajectory position
+    const pos = interpolateTrajectory(i);
+
+    // Distance attenuation (y: 0=near=loud, 1=far=quiet)
+    // Perceptual model: amplitude falls off with distance
+    const distanceFactor = 0.2 + 0.8 * (1 - pos.y);
+    const attenuation = distanceFactor * distanceFactor;
+
+    // Distance lowpass (far sounds duller)
+    // Cutoff decreases with distance
+    const distanceLpCoeff = 0.2 + 0.7 * (1 - pos.y);
+
+    // Door closed adds more muffling
+    const closedAmount = doorEnvelope ? doorEnvelope(i / sampleRate) : null;
+    // Explicit legacy branch preserves the exact no-event operation order.
+    const doorLpCoeff = doorEnvelope ? distanceLpCoeff * (1 - 0.6 * closedAmount) : (validatedRecipe.doorClosed ? distanceLpCoeff * 0.4 : distanceLpCoeff);
+    const doorAttenuation = doorEnvelope ? 1 - 0.5 * closedAmount : (validatedRecipe.doorClosed ? 0.5 : 1.0);
+
+    // Apply lowpass filter
+    lpState = lpState + doorLpCoeff * (sourceSample - lpState);
+    let filtered = lpState * attenuation * doorAttenuation;
+
+    // Equal-power stereo pan (x: 0=left, 1=right)
+    const panAngle = pos.x * Math.PI / 2;
+    const leftGain = Math.cos(panAngle);
+    const rightGain = Math.sin(panAngle);
+
+    // Add delay network for room ambience
+    let ambienceSum = 0;
+    for (let d = 0; d < 4; d++) {
+      const delayed = delayLines[d][delayIndices[d]];
+      ambienceSum += delayed * (0.25 / (d + 1)); // Geometric decay
+
+      // Write to delay with feedback (bounded by feedbackGain < 1)
+      delayLines[d][delayIndices[d]] = filtered + delayed * feedbackGain;
+
+      // Advance circular buffer
+      delayIndices[d] = (delayIndices[d] + 1) % delayTimes[d];
+    }
+
+    // Mix direct + ambience
+    const mixed = filtered + ambienceSum * (validatedRecipe.version >= 2 ? validatedRecipe.echoAmount : 0.3);
+
+    leftOut[i] = mixed * leftGain;
+    rightOut[i] = mixed * rightGain;
+  }
+
+  // Integrated correction: fade the final 50ms of the included tail, then
+  // normalize the unclipped stereo render once. Never clip before measuring peak.
+  const fadeFrames = Math.round(sampleRate * 0.05);
+  for (let i = 0; i < outputFrames; i++) {
+    if (!Number.isFinite(leftOut[i]) || !Number.isFinite(rightOut[i]))
+      throw new Error('Render produced nonfinite audio');
+    if (i >= outputFrames - fadeFrames) {
+      const gain = (outputFrames - 1 - i) / (fadeFrames - 1);
+      leftOut[i] *= gain;
+      rightOut[i] *= gain;
+    }
+  }
+
+  // Find peak
+  let peak = 0;
+  for (let i = 0; i < outputFrames; i++) {
+    peak = Math.max(peak, Math.abs(leftOut[i]), Math.abs(rightOut[i]));
+  }
+
+  // Normalize only if peak > 0.95
+  let normalizationGain = 1.0;
+  if (peak > 0.95) {
+    normalizationGain = 0.95 / peak;
+    for (let i = 0; i < outputFrames; i++) {
+      leftOut[i] *= normalizationGain;
+      rightOut[i] *= normalizationGain;
+    }
+  }
+
+  // CRUCIAL: Encode to WAV first, then decode for preview
+  const wavBytes = encodeWav([leftOut, rightOut], sampleRate);
+  const decoded = decodeWav(wavBytes);
+
+  return {
+    wavBytes,
+    previewChannels: decoded.channels,
+    sampleRate,
+    normalizationGain,
+    sourceFrames,
+    outputFrames,
+    tailFrames,
+    recipe: validatedRecipe
+  };
+}
+
+// ============================================================================
+// DEMO SOURCES
+// ============================================================================
+
+export function createDemoSource(sampleRate, kind = 'tap') {
+  if (sampleRate !== 24000 && sampleRate !== 48000) {
+    throw new Error(`sampleRate must be 24000 or 48000, got: ${sampleRate}`);
+  }
+
+  // Fixed PRNG for determinism (LCG)
+  let seed = { tap: 12345, creak: 67890, breath: 11111 }[kind] || 12345;
+  function random() {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return (seed >>> 0) / 0x100000000;
+  }
+
+  if (kind === 'tap') {
+    // Sharp percussive hit with exponential decay
+    const duration = 0.3;
+    const numSamples = Math.floor(duration * sampleRate);
+    const buffer = new Float32Array(numSamples);
+
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / sampleRate;
+      const envelope = Math.exp(-t * 15);
+      const noise = (random() - 0.5) * 2;
+      buffer[i] = noise * envelope * 0.8;
+    }
+
+    return buffer;
+  } else if (kind === 'creak') {
+    // Low frequency oscillation with noise
+    const duration = 1.2;
+    const numSamples = Math.floor(duration * sampleRate);
+    const buffer = new Float32Array(numSamples);
+
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / sampleRate;
+      const envelope = Math.sin(t * Math.PI / duration) * 0.6;
+      const tone = Math.sin(2 * Math.PI * 120 * t + Math.sin(2 * Math.PI * 3 * t) * 2);
+      const noise = (random() - 0.5) * 0.3;
+      buffer[i] = (tone * 0.7 + noise * 0.3) * envelope;
+    }
+
+    return buffer;
+  } else if (kind === 'breath') {
+    // Filtered noise with slow envelope
+    const duration = 2.0;
+    const numSamples = Math.floor(duration * sampleRate);
+    const buffer = new Float32Array(numSamples);
+
+    let lpState = 0;
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / sampleRate;
+      const envelope = Math.sin(t * Math.PI / duration) * 0.4;
+      const noise = (random() - 0.5) * 2;
+      lpState = lpState + 0.05 * (noise - lpState);
+      buffer[i] = lpState * envelope;
+    }
+
+    return buffer;
+  } else {
+    throw new Error(`Unknown demo kind: ${kind}`);
+  }
+}

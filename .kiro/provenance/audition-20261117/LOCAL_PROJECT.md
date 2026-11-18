@@ -1,0 +1,3 @@
+# Local project integration
+
+Integrator-authored after the genuine Kiro DSP/audition work; no claim of new Kiro generation. Existing engine and audition modules unchanged. New project-file module snapshots owned float32 samples, serializes explicit little-endian bytes and validates exact bounded schema/source digest before returning owned data. UI requires explicit replacement, retains current state on invalid input/cancellation, disables playback while processing, and does not autoplay. Source-safe checkpoint excludes downloaded project files and audio. See README for actual native scope and remaining limits.

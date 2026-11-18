@@ -1,0 +1,3 @@
+# Monitor consistency
+
+Integrator-authored playback helper fixes a review finding: audition used 0.35 gain while dry/rendered playback used unity. The new normal-playback GainNode uses 0.35 with bounded audio-clock edge fades and maximum two owned voices. Exact source buffers, renderer, audition DSP/controller and export bytes remain unchanged. App waits for context resume before synchronous playback scheduling and uses the returned audio-clock start for ghost motion. Source/Stop invalidation remains guarded. No claim of new Kiro generation, loudness normalization or perceptually click-free audition. See README for actual native scope.

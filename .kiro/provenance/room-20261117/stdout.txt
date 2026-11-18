@@ -1,0 +1,65 @@
+# Foley Seance DSP Engine Specification
+
+## Overview
+A deterministic, browser-compatible audio DSP engine for generating spatialized Foley effects through seeded granular synthesis. Pure computational audio processing with no external dependencies or I/O.
+
+## Architecture
+
+### Core Principles
+- **Deterministic**: Same recipe + source → identical byte-for-byte WAV output
+- **Bounded**: All operations have known memory/time limits (max 10s audio)
+- **Pure computation**: No I/O, DOM, network, or audio device APIs
+- **Seed-driven PRNG**: Stable uint32 arithmetic for cross-platform consistency
+
+### DSP Pipeline
+1. **Trajectory interpolation**: Linear interpolation of sparse control points over output timeline
+2. **Granular engine**: 
+   - Grain size/overlap controlled by x parameter (affects pitch/texture)
+   - Source playback rate modulated by x (audible pitch variation)
+   - Read position scattered within bounds for textural variation
+3. **Spatial processing**: 
+   - y parameter controls multi-tap delay spacing (reverb-like space)
+   - Bounded feedback for realistic decay
+   - Multiple delay taps create sense of environment
+4. **Normalization**: Only applied when peak exceeds ~0.95 to preserve dynamics
+
+### Algorithm Constraints
+- Linear source sample interpolation (not resampling filters)
+- Grain overlap with cosine-squared windowing for smooth output
+- O(n) complexity—no quadratic source×output iteration
+- Deterministic float32 accumulation (order-dependent sums avoided)
+
+## API Contract
+
+### `validateRecipe(recipe)`
+Returns deep-cloned canonical recipe or throws descriptive Error.
+
+**Validation rules:**
+- Exact keys only: `{version, seed, durationSeconds, trajectory}`
+- `version`: must be exactly `1`
+- `seed`: uint32 (0..0xFFFFFFFF), no coercion
+- `durationSeconds`: finite number, >0, ≤10
+- `trajectory`: array of 2..128 points
+  - Each point exact keys `{t, x, y}`
+  - All values finite numbers in [0,1]
+  - `t` strictly increasing, first=0, last=1
+
+### `renderRecipe(source, sampleRate, recipe)`
+Returns `{wavBytes, previewSamples, sampleRate, recipe}` where preview equals decoded WAV.
+
+**Guarantees:**
+- `previewSamples === decodeWav(wavBytes).samples` (sample-exact)
+- Single render path for consistency
+- Output length = `Math.round(durationSeconds * sampleRate)`, capped at 10s
+- Source/recipe immutability
+
+### `encodeWav(samples, sampleRate)` / `decodeWav(bytes)`
+Standard RIFF WAVE PCM16 encoding with strict validation.
+
+**Quantization:**
+- Negative: `sample * 32768`, round, clamp to -32768
+- Positive: `sample * 32767`, round, clamp to 32767
+- Decode inverse: negative/32768, positive/32767
+
+### `createDemoSource(sampleRate)`
+Generates ~1s dry percussive source (noise bursts + tonal elements) using fixed-
